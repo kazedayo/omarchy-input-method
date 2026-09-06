@@ -4,6 +4,7 @@
   "name": "Omarchy Input Method",
   "version": "1.0.0",
   "author": "kaz",
+  "license": "MIT",
   "description": "Active input method (Rime 中文 / Mozc 日本語 / English), click toggles",
   "kinds": [
     "bar-widget"
