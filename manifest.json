@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "id": "kaz.input-method",
-  "name": "Input method",
+  "id": "io.github.kaz.input-method",
+  "name": "Input Method",
   "version": "1.0.0",
   "author": "kaz",
   "description": "Active input method (Rime 中文 / Mozc 日本語 / English), click toggles",
@@ -12,7 +12,7 @@
     "barWidget": "InputMethod.qml"
   },
   "barWidget": {
-    "displayName": "Input method",
+    "displayName": "Input Method",
     "description": "Active input method (Rime 中文 / Mozc 日本語 / English), click toggles",
     "category": "Compositor",
     "allowMultiple": false
