@@ -4,6 +4,8 @@ Bar widget for [Omarchy](https://omarchy.org/) that shows the active [fcitx5](ht
 
 Labels: **中** Rime, **あ** Mozc, **EN** US keyboard / Rime ascii mode.
 
+![Omarchy Input Method](preview.png)
+
 ## Install
 
 ```sh
