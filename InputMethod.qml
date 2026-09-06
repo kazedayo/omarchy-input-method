@@ -17,8 +17,8 @@ import qs.Commons
 // ponytail: flat 100ms — raise to 200ms if battery matters more than latency.
 Panel {
   id: root
-  moduleName: "io.github.kaz.input-method"
-  ipcTarget: "io.github.kaz.input-method"
+  moduleName: "io.github.kaz.omarchy-input-method"
+  ipcTarget: "io.github.kaz.omarchy-input-method"
 
   // Raw base IM from fcitx5-remote -n, with keyboard-* mapped to "en".
   property string baseIM: ""
