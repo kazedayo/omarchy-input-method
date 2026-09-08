@@ -31,23 +31,6 @@ Panel {
   property var imList: []
   property var schemaList: []
   property string currentSchema: ""
-  // Set by the bridge when fcitx5's kimpanel side vanishes (fcitx5 restart);
-  // gates the 100ms fcitx5-remote poll so it doesn't dbus-activate a twin.
-  property bool bridgeDead: false
-
-  // Current Mozc composition mode ("Hiragana", "Full Katakana", ...), pushed
-  // by the kimpanel bridge; "" when Mozc isn't the active IM.
-  property string mozcMode: ""
-  // Order matches mozc's own menu (mozc_engine.cc kPropCompositionModes).
-  readonly property var mozcModes: [
-    { path: "mozc-mode-direct", glyph: "A", label: "Direct" },
-    { path: "mozc-mode-hiragana", glyph: "あ", label: "Hiragana" },
-    { path: "mozc-mode-katakana_full", glyph: "ア", label: "Full Katakana" },
-    { path: "mozc-mode-alpha_full", glyph: "Ａ", label: "Full ASCII" },
-    { path: "mozc-mode-alpha_half", glyph: "A", label: "Half ASCII" },
-    { path: "mozc-mode-katakana_half", glyph: "ｱ", label: "Half Katakana" }
-  ]
-  readonly property string bridgePath: Qt.resolvedUrl("kimpanel-bridge.py").toString().replace(/^file:\/\//, "")
 
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -63,7 +46,7 @@ Panel {
   }
   readonly property string tip: {
     if (imState === "zh") return "中文 — Rime"
-    if (imState === "mozc") return "日本語 — Mozc" + (mozcMode ? " (" + mozcMode + ")" : "")
+    if (imState === "mozc") return "日本語 — Mozc"
     if (imState === "ren") return "English — Rime (ascii mode)"
     if (imState === "en") return "English — US keyboard"
     return imState
@@ -84,19 +67,13 @@ Panel {
     for (var i = 0; i < imList.length; i++) t.push({ kind: "im", value: imList[i] })
     if (hasSchemaPicker) for (var j = 0; j < schemaList.length; j++) t.push({ kind: "schema", value: schemaList[j] })
     if (rimeActive) t.push({ kind: "ascii" })
-    if (mozcActive) {
-      for (var k = 0; k < mozcModes.length; k++) t.push({ kind: "mozcMode", value: mozcModes[k].path })
-      t.push({ kind: "mozc" })
-    }
+    if (mozcActive) t.push({ kind: "mozc" })
     return t
   }
   property int cursorIndex: 0
   property bool cursorActive: false
 
   readonly property int asciiIndex: imList.length + (hasSchemaPicker ? schemaList.length : 0)
-  // rimeActive and mozcActive are mutually exclusive, so the rime row only
-  // shifts the mozc rows when present.
-  readonly property int mozcBase: asciiIndex + (rimeActive ? 1 : 0)
 
   visible: imState !== ""
   implicitWidth: button.implicitWidth
@@ -108,9 +85,6 @@ Panel {
     // Freeze the polled state so the current row stays on the IM that was
     // actually active.
     if (opened) return
-    // fcitx5 is down (restarting); polling would just dbus-activate a twin.
-    // The bridge's "lost" event means the name owner vanished.
-    if (bridgeDead) return
     // A query already in flight predates the IM change, so re-run once it lands.
     if (baseProc.running) {
       basePending = true
@@ -140,7 +114,6 @@ Panel {
     if (t.kind === "im") bar.run("fcitx5-remote -s " + t.value)
     else if (t.kind === "schema") bar.run("busctl --user call org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 SetSchema s " + t.value)
     else if (t.kind === "ascii") bar.run("busctl --user call org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 SetAsciiMode b " + (imState === "ren" ? "false" : "true"))
-    else if (t.kind === "mozcMode") bridgeProc.write("/Fcitx/" + t.value + "\n")
     else if (t.kind === "mozc") bar.run("/usr/lib/mozc/mozc_tool --mode=config_dialog")
   }
 
@@ -183,25 +156,6 @@ Panel {
 
   function prettySchema(id) {
     return id.split("_").map(function(w) { return w.charAt(0).toUpperCase() + w.slice(1) }).join(" ")
-  }
-
-  function onBridgeLine(data) {
-    // While the panel is open, input focus sits on the popup, so fcitx5
-    // reports the popup's context (keyboard IM) — freeze the pushed mode so
-    // the check stays on the mode of the app the user came from (same guard
-    // as queryBase).
-    if (opened) return
-    var msg
-    try { msg = JSON.parse(data) } catch (e) { return }
-    if (msg.e === "lost") root.bridgeDead = true
-    else if (msg.e === "owner" || msg.e === "n") root.bridgeDead = false
-    if (msg.e !== "u" && msg.e !== "r") return
-    var p = String(msg.v)
-    if (p.indexOf("/Fcitx/im:") !== 0) return
-    var parts = p.split(":")
-    // ["/Fcitx/im", description, icon, subMode, special]; icon and subMode
-    // track the composition mode while Mozc is active.
-    root.mozcMode = (parts.length >= 5 && parts[2].indexOf("fcitx_mozc_") === 0) ? parts[3] : ""
   }
 
   Timer {
@@ -273,28 +227,6 @@ Panel {
         root.currentSchema = c ? c[1] : ""
       }
     }
-  }
-
-  // Long-lived kimpanel bridge: pushes engine status (incl. Mozc mode) as
-  // JSON lines; takes "/Fcitx/..." TriggerProperty paths on stdin.
-  Process {
-    id: bridgeProc
-    command: ["python3", root.bridgePath]
-    stdinEnabled: true
-    running: true
-    stdout: SplitParser {
-      onRead: data => root.onBridgeLine(data)
-    }
-    stderr: SplitParser {
-      onRead: data => console.log("kimpanel-bridge:", data)
-    }
-    onExited: bridgeRestart.restart()
-  }
-
-  Timer {
-    id: bridgeRestart
-    interval: 2000
-    onTriggered: bridgeProc.running = true
   }
 
   WidgetButton {
@@ -470,26 +402,9 @@ Panel {
               }
             }
 
-            Repeater {
-              model: root.mozcActive ? root.mozcModes : []
-
-              delegate: PanelRow {
-                required property var modelData
-                required property int index
-                flatIndex: root.mozcBase + index
-                glyph: modelData.glyph
-                label: modelData.label
-                checked: root.mozcMode === modelData.label
-                onActivate: {
-                  root.close()
-                  bridgeProc.write("/Fcitx/" + modelData.path + "\n")
-                }
-              }
-            }
-
             PanelRow {
               visible: root.mozcActive
-              flatIndex: root.mozcBase + root.mozcModes.length
+              flatIndex: root.imList.length
               glyph: "あ"
               label: "Mozc settings…"
               onActivate: {
