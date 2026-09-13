@@ -1,0 +1,44 @@
+diff --git i/src/rimeservice.cpp w/src/rimeservice.cpp
+index b8186b2..40a9282 100644
+--- i/src/rimeservice.cpp
++++ w/src/rimeservice.cpp
+@@ -84,4 +84,17 @@ std::vector<std::string> RimeService::listAllSchemas() {
+     return schemas;
+ }
+ 
++void RimeService::setOption(const std::string &option, bool value) {
++    if (auto *state = currentState()) {
++        engine_->api()->set_option(state->session(), option.c_str(), value);
++    }
++}
++
++bool RimeService::getOption(const std::string &option) {
++    if (auto *state = currentState()) {
++        return bool(engine_->api()->get_option(state->session(), option.c_str()));
++    }
++    return false;
++}
++
+ } // namespace fcitx::rime
+diff --git i/src/rimeservice.h w/src/rimeservice.h
+index a5e8920..2258f22 100644
+--- i/src/rimeservice.h
++++ w/src/rimeservice.h
+@@ -24,6 +24,8 @@ public:
+     void setSchema(const std::string &schema);
+     std::string currentSchema();
+     std::vector<std::string> listAllSchemas();
++    void setOption(const std::string &option, bool value);
++    bool getOption(const std::string &option);
+ 
+ private:
+     RimeState *currentState();
+@@ -32,6 +34,8 @@ private:
+     FCITX_OBJECT_VTABLE_METHOD(setSchema, "SetSchema", "s", "");
+     FCITX_OBJECT_VTABLE_METHOD(currentSchema, "GetCurrentSchema", "", "s");
+     FCITX_OBJECT_VTABLE_METHOD(listAllSchemas, "ListAllSchemas", "", "as");
++    FCITX_OBJECT_VTABLE_METHOD(setOption, "SetOption", "sb", "");
++    FCITX_OBJECT_VTABLE_METHOD(getOption, "GetOption", "s", "b");
+ 
+     RimeEngine *engine_;
+ };

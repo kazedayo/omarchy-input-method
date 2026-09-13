@@ -31,6 +31,11 @@ Panel {
   property var imList: []
   property var schemaList: []
   property string currentSchema: ""
+  // Rime schema switches (full_shape, simplification, emoji, …), toggled live
+  // via GetOption/SetOption on org.fcitx.Fcitx.Rime1. Only patched fcitx5-rime
+  // builds expose those methods; probeProc feature-detects at panel open.
+  property bool optionsApi: false
+  property var optRows: []
 
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -56,6 +61,9 @@ Panel {
   readonly property bool mozcActive: imState === "mozc"
   // Schema switcher only makes sense with more than one schema.
   readonly property bool hasSchemaPicker: rimeActive && schemaList.length > 1
+  readonly property int schemaRowsCount: hasSchemaPicker ? schemaList.length : 0
+  readonly property bool showOptions: rimeActive && optionsApi && optRows.length > 0
+  readonly property int optRowCount: showOptions ? optRows.length : 0
 
   readonly property color hoverFill: bar ? Style.hoverFillFor(fg, Color.accent) : "transparent"
   readonly property color selectedFill: bar ? Style.selectedFillFor(fg, Color.accent) : "transparent"
@@ -66,6 +74,7 @@ Panel {
     var t = []
     for (var i = 0; i < imList.length; i++) t.push({ kind: "im", value: imList[i] })
     if (hasSchemaPicker) for (var j = 0; j < schemaList.length; j++) t.push({ kind: "schema", value: schemaList[j] })
+    if (showOptions) for (var k = 0; k < optRows.length; k++) t.push({ kind: "option", row: optRows[k] })
     if (rimeActive) t.push({ kind: "ascii" })
     if (mozcActive) t.push({ kind: "mozc" })
     return t
@@ -73,7 +82,7 @@ Panel {
   property int cursorIndex: 0
   property bool cursorActive: false
 
-  readonly property int asciiIndex: imList.length + (hasSchemaPicker ? schemaList.length : 0)
+  readonly property int asciiIndex: imList.length + schemaRowsCount + optRowCount
 
   visible: imState !== ""
   implicitWidth: button.implicitWidth
@@ -101,7 +110,18 @@ Panel {
     asciiProc.running = true
   }
 
-  Component.onCompleted: queryBase()
+  // Until the first input context is activated, fcitx5-remote -n prints
+  // nothing and the widget would stay hidden until the user focuses a text
+  // field. Seed the label from the group's first IM (fcitx5's own
+  // no-focus fallback); the next real poll overwrites it.
+  function queryDefault() {
+    if (!listProc.running) listProc.running = true
+  }
+
+  Component.onCompleted: {
+    queryBase()
+    queryDefault()
+  }
 
   function moveCursor(delta) {
     cursorIndex = Math.max(0, Math.min(cursorTargets.length - 1, cursorIndex + delta))
@@ -114,6 +134,7 @@ Panel {
     if (t.kind === "im") bar.run("fcitx5-remote -s " + t.value)
     else if (t.kind === "schema") bar.run("busctl --user call org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 SetSchema s " + t.value)
     else if (t.kind === "ascii") bar.run("busctl --user call org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 SetAsciiMode b " + (imState === "ren" ? "false" : "true"))
+    else if (t.kind === "option") root.activateOptionRow(t.row)  // stays open for multi-toggle
     else if (t.kind === "mozc") bar.run("/usr/lib/mozc/mozc_tool --mode=config_dialog")
   }
 
@@ -121,6 +142,7 @@ Panel {
     if (opened) {
       listProc.running = true
       schemaProc.running = true
+      probeProc.running = true
       cursorActive = false
       cursorIndex = 0
     }
@@ -158,6 +180,112 @@ Panel {
     return id.split("_").map(function(w) { return w.charAt(0).toUpperCase() + w.slice(1) }).join(" ")
   }
 
+  // ---- Rime schema switches (needs patched fcitx5-rime) ----
+  // Option list comes from the compiled schema YAML (what rime actually
+  // runs, patches merged); live state and toggling go through DBus.
+
+  // Targeted parser for the `switches:` block: librime's compiled output
+  // uses inline lists and scalars only.
+  function parseSwitchesYaml(text) {
+    var lines = String(text).split("\n")
+    var res = []
+    var i = 0
+    while (i < lines.length && lines[i].indexOf("switches:") !== 0) i++
+    if (i === lines.length) return res
+
+    function unquote(s) {
+      s = s.trim()
+      if (s.length > 1 && (s.charAt(0) === "\"" || s.charAt(0) === "'") && s.charAt(s.length - 1) === s.charAt(0))
+        s = s.slice(1, -1)
+      return s
+    }
+    function val(v) {
+      v = v.trim()
+      if (v.length > 1 && v.charAt(0) === "[" && v.charAt(v.length - 1) === "]")
+        return v.slice(1, -1).split(",").map(unquote).filter(function(s) { return s !== "" })
+      return unquote(v)
+    }
+
+    var cur = null
+    for (i++; i < lines.length; i++) {
+      var line = lines[i]
+      if (line.trim() === "" || line.trim().charAt(0) === "#") continue
+      if (line.charAt(0) !== " ") break
+      var m = line.match(/^\s*-\s*([\w-]+):?\s*(.*)$/)
+      if (m) {
+        if (cur) res.push(cur)
+        cur = {}
+        if (m[2] !== "") cur[m[1]] = val(m[2])
+        continue
+      }
+      m = line.match(/^\s*([\w-]+):\s*(.*)$/)
+      if (m && cur && m[2] !== "") cur[m[1]] = val(m[2])
+    }
+    if (cur) res.push(cur)
+    return res
+  }
+
+  // Same skip rules as fcitx5-rime's own option actions: <2 states, or a
+  // name switch without exactly 2 states, is ignored; ascii_mode is already
+  // exposed as the English-mode row.
+  function buildOptionRows(sws) {
+    var rows = []
+    for (var i = 0; i < sws.length; i++) {
+      var sw = sws[i]
+      if (!sw.states || sw.states.length < 2) continue
+      if (sw.name) {
+        if (sw.states.length !== 2 || sw.name === "ascii_mode") continue
+        rows.push({ type: "toggle", option: sw.name, labels: sw.states, on: false })
+      } else if (sw.options && sw.options.length === sw.states.length) {
+        for (var j = 0; j < sw.options.length; j++)
+          rows.push({ type: "select", option: sw.options[j], label: sw.states[j], group: sw.options.slice(), active: false })
+      }
+    }
+    return rows
+  }
+
+  // Runs once both schemaProc and probeProc have landed for this open.
+  function loadOptions() {
+    if (!opened || !optionsApi || currentSchema === "" || optionsProc.running) return
+    optionsProc.command = ["bash", "-c",
+      "cat \"$HOME/.local/share/fcitx5/rime/build/" + currentSchema + ".schema.yaml\""]
+    optionsProc.running = true
+  }
+
+  function refreshOptionStates() {
+    var names = []
+    for (var i = 0; i < optRows.length; i++)
+      if (names.indexOf(optRows[i].option) === -1) names.push(optRows[i].option)
+    optStateProc.command = ["bash", "-c",
+      "for o in " + names.join(" ") + "; do v=$(busctl --user call org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 GetOption s \"$o\" 2>/dev/null); echo \"$o $v\"; done"]
+    optStateProc.running = true
+  }
+
+  function applyOptionState(name, value) {
+    for (var i = 0; i < optRows.length; i++) {
+      var r = optRows[i]
+      if (r.option === name) { if (r.type === "toggle") r.on = value; else r.active = value }
+    }
+    optRows = optRows.slice() // fresh array so the Repeater re-renders
+  }
+
+  function activateOptionRow(row) {
+    if (!bar) return
+    var call = "busctl --user call org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 SetOption sb "
+    if (row.type === "toggle") {
+      var nv = !row.on
+      bar.run(call + row.option + (nv ? " true" : " false"))
+      applyOptionState(row.option, nv)
+    } else {
+      // exclusive select, like rime's own switch menu: chosen true, rest false
+      var cmd = call + row.option + " true"
+      for (var i = 0; i < row.group.length; i++)
+        if (row.group[i] !== row.option) cmd += "; " + call + row.group[i] + " false"
+      bar.run(cmd)
+      applyOptionState(row.option, true)
+    }
+  }
+
   Timer {
     interval: 100
     running: true
@@ -176,7 +304,11 @@ Panel {
         var im = String(text).trim()
         // Keep the last label on a failed read (fcitx5 restarting); it
         // recovers on the next tick.
-        if (im === "") return
+        if (im === "") {
+          // Nothing focused yet on a fresh boot: seed from the group default.
+          if (root.baseIM === "") root.queryDefault()
+          return
+        }
         if (im.indexOf("keyboard-") === 0) im = "en"
         root.baseIM = im
         if (im === "rime") root.queryAscii()
@@ -209,7 +341,13 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         var names = root.parseGroup(text)
-        if (names.length > 0) root.imList = names
+        if (names.length > 0) {
+          root.imList = names
+          if (root.baseIM === "") {
+            var im = names[0]
+            root.baseIM = im.indexOf("keyboard-") === 0 ? "en" : im
+          }
+        }
       }
     }
   }
@@ -225,6 +363,47 @@ Panel {
         root.schemaList = m ? m.map(function(s) { return s.slice(1, -1) }) : []
         var c = lines.length > 1 ? lines[1].match(/"([^"]*)"/) : null
         root.currentSchema = c ? c[1] : ""
+        root.loadOptions()
+      }
+    }
+  }
+
+  // Does this fcitx5-rime expose SetOption/GetOption? (patched builds only)
+  Process {
+    id: probeProc
+    command: ["bash", "-c", "busctl --user introspect org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 2>/dev/null"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.optionsApi = String(text).indexOf("SetOption") !== -1
+        root.loadOptions()
+      }
+    }
+  }
+
+  Process {
+    id: optionsProc
+    command: ["bash", "-c", "true"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.optRows = root.buildOptionRows(root.parseSwitchesYaml(String(text)))
+        if (root.optRows.length > 0) root.refreshOptionStates()
+      }
+    }
+  }
+
+  Process {
+    id: optStateProc
+    command: ["bash", "-c", "true"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var lines = String(text).trim().split("\n")
+        for (var i = 0; i < lines.length; i++) {
+          var parts = lines[i].split(" ")
+          if (parts.length === 3) root.applyOptionState(parts[0], parts[2] === "true")
+        }
       }
     }
   }
@@ -370,6 +549,38 @@ Panel {
                   root.close()
                   if (root.bar) root.bar.run("busctl --user call org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 SetSchema s " + modelData)
                 }
+              }
+            }
+          }
+
+          // ---- Rime schema switches ----
+          PanelSeparator {
+            visible: root.showOptions
+            foreground: root.fg
+          }
+
+          Column {
+            visible: root.showOptions
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSectionHeader {
+              text: "RIME OPTIONS"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: root.showOptions ? root.optRows : []
+
+              delegate: PanelRow {
+                required property var modelData
+                required property int index
+                flatIndex: root.imList.length + root.schemaRowsCount + index
+                // Toggle rows show the current state label; clicking flips it.
+                label: modelData.type === "toggle" ? modelData.labels[modelData.on ? 1 : 0] : modelData.label
+                checked: modelData.type === "toggle" ? modelData.on : modelData.active
+                onActivate: root.activateOptionRow(modelData)
               }
             }
           }
