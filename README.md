@@ -20,7 +20,7 @@ omarchy bar move io.github.kaz.omarchy-input-method --section right
 
 ## Usage
 
-- Left click: open the picker (input methods, Rime schema, Rime options, ascii mode, Mozc settings)
+- Left click: open the picker (input methods; a Rime section with schema, ascii mode and segmented schema options; Mozc settings)
 - Right click: `fcitx5-remote -t`
 - Escape: close the panel
 

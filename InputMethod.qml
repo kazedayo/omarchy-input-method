@@ -63,7 +63,6 @@ Panel {
   readonly property bool hasSchemaPicker: rimeActive && schemaList.length > 1
   readonly property int schemaRowsCount: hasSchemaPicker ? schemaList.length : 0
   readonly property bool showOptions: rimeActive && optionsApi && optRows.length > 0
-  readonly property int optRowCount: showOptions ? optRows.length : 0
 
   readonly property color hoverFill: bar ? Style.hoverFillFor(fg, Color.accent) : "transparent"
   readonly property color selectedFill: bar ? Style.selectedFillFor(fg, Color.accent) : "transparent"
@@ -74,15 +73,16 @@ Panel {
     var t = []
     for (var i = 0; i < imList.length; i++) t.push({ kind: "im", value: imList[i] })
     if (hasSchemaPicker) for (var j = 0; j < schemaList.length; j++) t.push({ kind: "schema", value: schemaList[j] })
-    if (showOptions) for (var k = 0; k < optRows.length; k++) t.push({ kind: "option", row: optRows[k] })
     if (rimeActive) t.push({ kind: "ascii" })
+    if (showOptions) for (var k = 0; k < optRows.length; k++) t.push({ kind: "option", row: optRows[k] })
     if (mozcActive) t.push({ kind: "mozc" })
     return t
   }
   property int cursorIndex: 0
   property bool cursorActive: false
 
-  readonly property int asciiIndex: imList.length + schemaRowsCount + optRowCount
+  readonly property int asciiIndex: imList.length + schemaRowsCount
+  readonly property var optionGroups: buildOptionGroups(optRows)
 
   visible: imState !== ""
   implicitWidth: button.implicitWidth
@@ -242,6 +242,43 @@ Panel {
       }
     }
     return rows
+  }
+
+  // Semantic segmentation: multi-way charset switches and the simplification
+  // family are hanzi variants; shape, punctuation and emoji keep their own
+  // groups; anything unknown falls into a catch-all.
+  function optionGroupTitle(row) {
+    if (row.type === "select") return "HANZI VARIANT"
+    switch (row.option) {
+      case "full_shape":
+        return "SHAPE"
+      case "ascii_punct":
+        return "PUNCTUATION"
+      default:
+        if (/^(simplification|traditionalization|extended_charset|variants_|trad_)/.test(row.option)) return "HANZI VARIANT"
+        if (row.option.indexOf("emoji") !== -1) return "SUGGESTIONS"
+        return "OPTIONS"
+    }
+  }
+
+  // Group rows by title, keeping first-appearance (schema) order, and record
+  // each group's first row index for the flat cursor numbering.
+  function buildOptionGroups(rows) {
+    var groups = []
+    for (var i = 0; i < rows.length; i++) {
+      var title = optionGroupTitle(rows[i])
+      var g = null
+      for (var k = 0; k < groups.length; k++)
+        if (groups[k].title === title) { g = groups[k]; break }
+      if (!g) { g = { title: title, rows: [] }; groups.push(g) }
+      g.rows.push(rows[i])
+    }
+    var idx = 0
+    for (var s = 0; s < groups.length; s++) {
+      groups[s].firstIndex = idx
+      idx += groups[s].rows.length
+    }
+    return groups
   }
 
   // Runs once both schemaProc and probeProc have landed for this open.
@@ -520,20 +557,26 @@ Panel {
             }
           }
 
+          // ---- Rime (merged): schemas · English mode · segmented switches ----
           PanelSeparator {
-            visible: root.hasSchemaPicker
+            visible: root.rimeActive || root.mozcActive
             foreground: root.fg
           }
 
           Column {
-            visible: root.hasSchemaPicker
+            visible: root.rimeActive
             width: parent.width
             spacing: Style.space(6)
 
             PanelSectionHeader {
-              text: "RIME SCHEMA"
+              text: "RIME"
               foreground: root.fg
               fontFamily: root.fontFamily
+            }
+
+            SubHeader {
+              visible: root.hasSchemaPicker
+              text: "SCHEMA"
             }
 
             Repeater {
@@ -551,58 +594,8 @@ Panel {
                 }
               }
             }
-          }
-
-          // ---- Rime schema switches ----
-          PanelSeparator {
-            visible: root.showOptions
-            foreground: root.fg
-          }
-
-          Column {
-            visible: root.showOptions
-            width: parent.width
-            spacing: Style.space(6)
-
-            PanelSectionHeader {
-              text: "RIME OPTIONS"
-              foreground: root.fg
-              fontFamily: root.fontFamily
-            }
-
-            Repeater {
-              model: root.showOptions ? root.optRows : []
-
-              delegate: PanelRow {
-                required property var modelData
-                required property int index
-                flatIndex: root.imList.length + root.schemaRowsCount + index
-                // Toggle rows show the current state label; clicking flips it.
-                label: modelData.type === "toggle" ? modelData.labels[modelData.on ? 1 : 0] : modelData.label
-                checked: modelData.type === "toggle" ? modelData.on : modelData.active
-                onActivate: root.activateOptionRow(modelData)
-              }
-            }
-          }
-
-          PanelSeparator {
-            visible: root.rimeActive || root.mozcActive
-            foreground: root.fg
-          }
-
-          Column {
-            visible: root.rimeActive || root.mozcActive
-            width: parent.width
-            spacing: Style.space(6)
-
-            PanelSectionHeader {
-              text: root.mozcActive ? "MOZC" : "RIME"
-              foreground: root.fg
-              fontFamily: root.fontFamily
-            }
 
             PanelRow {
-              visible: root.rimeActive
               flatIndex: root.asciiIndex
               glyph: "A"
               label: "English mode"
@@ -613,8 +606,47 @@ Panel {
               }
             }
 
+            Repeater {
+              model: root.showOptions ? root.optionGroups : []
+
+              delegate: Column {
+                id: groupDelegate
+                required property var modelData
+                width: parent.width
+                spacing: Style.space(6)
+
+                SubHeader { text: groupDelegate.modelData.title }
+
+                Repeater {
+                  model: groupDelegate.modelData.rows
+
+                  delegate: PanelRow {
+                    required property var modelData
+                    required property int index
+                    flatIndex: root.imList.length + root.schemaRowsCount + 1 + groupDelegate.modelData.firstIndex + index
+                    // Toggle rows show the current state label; clicking flips it.
+                    label: modelData.type === "toggle" ? modelData.labels[modelData.on ? 1 : 0] : modelData.label
+                    checked: modelData.type === "toggle" ? modelData.on : modelData.active
+                    onActivate: root.activateOptionRow(modelData)
+                  }
+                }
+              }
+            }
+          }
+
+          // ---- Mozc ----
+          Column {
+            visible: root.mozcActive
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSectionHeader {
+              text: "MOZC"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+            }
+
             PanelRow {
-              visible: root.mozcActive
               flatIndex: root.imList.length
               glyph: "あ"
               label: "Mozc settings…"
@@ -690,5 +722,18 @@ Panel {
       }
       onClicked: row.activate()
     }
+  }
+
+  // Dimmed sub-group label inside a section (schema list, option groups):
+  // regular weight + the section header's color language marks the hierarchy.
+  component SubHeader: Text {
+    textFormat: Text.PlainText
+    text: ""
+    color: Qt.darker(root.fg, 1.4)
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    topPadding: Math.ceil(Style.font.caption * 0.15)
+    elide: Text.ElideRight
+    width: parent.width
   }
 }
