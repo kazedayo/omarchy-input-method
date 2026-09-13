@@ -25,6 +25,9 @@ Panel {
   // Last known Rime ascii-mode reading, kept across IM switches so
   // re-entering Rime shows the real mode instead of a 中 flash.
   property bool asciiOn: false
+  // ascii_mode states from the active schema (["粵","英"]);
+  // fallback 中/English when the schema can't be read (stock fcitx5-rime).
+  property var asciiStates: []
   // "en" | "zh" | "ren" (rime ascii mode) | raw IM name | "" until first read
   readonly property string imState: baseIM === "rime" ? (asciiOn ? "ren" : "zh") : baseIM
   property bool basePending: false
@@ -261,8 +264,9 @@ Panel {
     }
   }
 
-  // Group rows by title, keeping first-appearance (schema) order, and record
-  // each group's first row index for the flat cursor numbering.
+  // Group rows by title, keeping first-appearance (schema) order. Toggles and
+  // selects render as different row components, so each group tracks the
+  // optRows index of its first row of each kind for the flat cursor numbering.
   function buildOptionGroups(rows) {
     var groups = []
     for (var i = 0; i < rows.length; i++) {
@@ -270,13 +274,17 @@ Panel {
       var g = null
       for (var k = 0; k < groups.length; k++)
         if (groups[k].title === title) { g = groups[k]; break }
-      if (!g) { g = { title: title, rows: [] }; groups.push(g) }
-      g.rows.push(rows[i])
-    }
-    var idx = 0
-    for (var s = 0; s < groups.length; s++) {
-      groups[s].firstIndex = idx
-      idx += groups[s].rows.length
+      if (!g) {
+        g = { title: title, toggles: [], selects: [], firstToggleIndex: -1, firstSelectIndex: -1 }
+        groups.push(g)
+      }
+      if (rows[i].type === "toggle") {
+        if (g.firstToggleIndex === -1) g.firstToggleIndex = i
+        g.toggles.push(rows[i])
+      } else {
+        if (g.firstSelectIndex === -1) g.firstSelectIndex = i
+        g.selects.push(rows[i])
+      }
     }
     return groups
   }
@@ -424,7 +432,15 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        root.optRows = root.buildOptionRows(root.parseSwitchesYaml(String(text)))
+        var sws = root.parseSwitchesYaml(String(text))
+        for (var i = 0; i < sws.length; i++) {
+          var sw = sws[i]
+          if (sw.name === "ascii_mode" && sw.states && sw.states.length === 2) {
+            root.asciiStates = sw.states.slice()
+            break
+          }
+        }
+        root.optRows = root.buildOptionRows(sws)
         if (root.optRows.length > 0) root.refreshOptionStates()
       }
     }
@@ -595,11 +611,11 @@ Panel {
               }
             }
 
-            PanelRow {
+            ToggleRow {
               flatIndex: root.asciiIndex
-              glyph: "A"
-              label: "English mode"
-              checked: root.imState === "ren"
+              offText: root.asciiStates.length === 2 ? root.asciiStates[0] : "中文"
+              onText: root.asciiStates.length === 2 ? root.asciiStates[1] : "English"
+              on: root.imState === "ren"
               onActivate: {
                 root.close()
                 if (root.bar) root.bar.run("busctl --user call org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 SetAsciiMode b " + (root.imState === "ren" ? "false" : "true"))
@@ -615,18 +631,34 @@ Panel {
                 width: parent.width
                 spacing: Style.space(6)
 
-                SubHeader { text: groupDelegate.modelData.title }
+                SubHeader {
+                  text: groupDelegate.modelData.title
+                  extraTop: Style.space(8)
+                }
 
                 Repeater {
-                  model: groupDelegate.modelData.rows
+                  model: groupDelegate.modelData.toggles
+
+                  delegate: ToggleRow {
+                    required property var modelData
+                    required property int index
+                    flatIndex: root.imList.length + root.schemaRowsCount + 1 + groupDelegate.modelData.firstToggleIndex + index
+                    offText: modelData.labels[0]
+                    onText: modelData.labels[1]
+                    on: modelData.on
+                    onActivate: root.activateOptionRow(modelData)
+                  }
+                }
+
+                Repeater {
+                  model: groupDelegate.modelData.selects
 
                   delegate: PanelRow {
                     required property var modelData
                     required property int index
-                    flatIndex: root.imList.length + root.schemaRowsCount + 1 + groupDelegate.modelData.firstIndex + index
-                    // Toggle rows show the current state label; clicking flips it.
-                    label: modelData.type === "toggle" ? modelData.labels[modelData.on ? 1 : 0] : modelData.label
-                    checked: modelData.type === "toggle" ? modelData.on : modelData.active
+                    flatIndex: root.imList.length + root.schemaRowsCount + 1 + groupDelegate.modelData.firstSelectIndex + index
+                    label: modelData.label
+                    checked: modelData.active
                     onActivate: root.activateOptionRow(modelData)
                   }
                 }
@@ -686,11 +718,14 @@ Panel {
       anchors.verticalCenter: parent.verticalCenter
       anchors.leftMargin: Style.space(6)
       anchors.rightMargin: Style.space(6)
-      spacing: Style.space(8)
+      // No glyph → no reserved column and no leading gap: label rows align
+      // flush with the row edge instead of drifting past a dead 22px box.
+      spacing: row.glyph !== "" ? Style.space(8) : 0
 
       Text {
         textFormat: Text.PlainText
         text: row.glyph
+        visible: row.glyph !== ""
         color: root.fg
         font.family: root.cjkFamily
         font.pixelSize: Style.font.title
@@ -707,7 +742,7 @@ Panel {
         font.pixelSize: Style.font.body
         font.bold: row.checked
         elide: Text.ElideRight
-        width: parent.width - Style.space(22) - Style.space(8)
+        width: row.glyph !== "" ? parent.width - Style.space(22) - Style.space(8) : parent.width
         anchors.verticalCenter: parent.verticalCenter
       }
     }
@@ -727,13 +762,89 @@ Panel {
   // Dimmed sub-group label inside a section (schema list, option groups):
   // regular weight + the section header's color language marks the hierarchy.
   component SubHeader: Text {
+    // extraTop: breathing room before option-group headers, so a group
+    // doesn't visually flow into the previous group's rows.
+    property real extraTop: 0
     textFormat: Text.PlainText
     text: ""
     color: Qt.darker(root.fg, 1.4)
     font.family: root.fontFamily
     font.pixelSize: Style.font.caption
-    topPadding: Math.ceil(Style.font.caption * 0.15)
+    topPadding: Math.ceil(Style.font.caption * 0.15) + extraTop
     elide: Text.ElideRight
     width: parent.width
+  }
+
+  // Two-state switch row: both states are shown with the active one bold and
+  // the other dimmed, so the row reads as a flip rather than a menu entry —
+  // row-level checked styling (accent fill) would read as a selection list.
+  component ToggleRow: CursorSurface {
+    id: trow
+    width: parent.width
+    required property int flatIndex
+    property string offText: ""
+    property string onText: ""
+    property bool on: false
+    signal activate()
+
+    hasCursor: root.cursorActive && root.cursorIndex === trow.flatIndex
+    current: false
+    foreground: root.fg
+    fill: root.hoverFill
+    currentFill: root.selectedFill
+    implicitHeight: trowInner.implicitHeight + Style.spacing.xl
+
+    Row {
+      id: trowInner
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(6)
+      anchors.rightMargin: Style.space(6)
+      spacing: Style.space(8)
+
+      Text {
+        textFormat: Text.PlainText
+        text: trow.offText
+        opacity: trow.on ? 0.55 : 1
+        color: root.fg
+        font.family: root.cjkFamily
+        font.pixelSize: Style.font.body
+        font.bold: !trow.on
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        text: "⇄"
+        opacity: 0.55
+        color: root.fg
+        font.family: root.cjkFamily
+        font.pixelSize: Style.font.body
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        text: trow.onText
+        opacity: trow.on ? 1 : 0.55
+        color: root.fg
+        font.family: root.cjkFamily
+        font.pixelSize: Style.font.body
+        font.bold: trow.on
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onContainsMouseChanged: if (containsMouse) {
+        root.cursorActive = true
+        root.cursorIndex = trow.flatIndex
+      }
+      onClicked: trow.activate()
+    }
   }
 }
