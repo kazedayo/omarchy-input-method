@@ -42,9 +42,9 @@ Panel {
 
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  // One font for Latin and CJK labels; otherwise the CJK fallback's taller
-  // line box makes glyphs jump vertically when switching IMs.
-  readonly property string cjkFamily: "Noto Sans CJK JP"
+  // System font; CJK glyphs come from fontconfig fallback (Noto Sans Mono
+  // CJK KR), so labels may shift vertically and han shapes aren't JP-style.
+  readonly property string cjkFamily: fontFamily
 
   readonly property string label: {
     if (imState === "zh") return "中"
@@ -52,6 +52,8 @@ Panel {
     if (imState === "en" || imState === "ren") return "EN"
     return imState.toUpperCase().substring(0, 4)
   }
+  // CJK radicals, kana, and unified ideographs — drives the overlay offset below.
+  readonly property bool labelIsCjk: /[\u2E80-\u30FF\u3400-\u9FFF]/.test(label)
   readonly property string tip: {
     if (imState === "zh") return "中文 — Rime"
     if (imState === "mozc") return "日本語 — Mozc"
@@ -465,12 +467,13 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
+    labelVisible: false
     text: root.label
     fontSize: Style.font.caption
     horizontalMargin: 6
-    // One font for Latin and CJK labels; otherwise the CJK fallback's taller
-    // line box makes the glyph jump vertically when switching IMs.
-    fontFamily: "Noto Sans CJK JP"
+    // System font; CJK glyphs come from fontconfig fallback. The label is
+    // rendered by the overlay below for baseline alignment.
+    fontFamily: root.fontFamily
     foreground: root.bar ? root.bar.barForeground : Color.foreground
     tooltipText: root.tip
     onPressed: function(button) {
@@ -479,6 +482,27 @@ Panel {
       } else {
         root.toggle()
       }
+    }
+
+    // Overlay label: EN (system font) and CJK (fontconfig fallback) baselines
+    // differ by a measured 1.41px at caption size; the taller CJK line box
+    // only compensates 0.5px when centered, leaving a ~0.91px jump when
+    // switching IMs. Nudge CJK labels up onto the EN baseline — EN renders
+    // identically to sibling bar widgets. Qt lineHeight/FixedHeight can't do
+    // this: it changes the box, not the baseline.
+    // ponytail: 0.0906em measured for JetBrainsMono NF ↔ Noto Sans Mono CJK
+    // KR (fontconfig's current fallback); re-measure if `omarchy font set`
+    // changes the system font.
+    Text {
+      anchors.horizontalCenter: parent.horizontalCenter
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.verticalCenterOffset: root.labelIsCjk ? -0.0906 * Style.font.caption : 0
+      textFormat: Text.PlainText
+      text: root.label
+      color: root.bar ? root.bar.barForeground : Color.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      renderType: Text.NativeRendering
     }
   }
 

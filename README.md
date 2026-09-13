@@ -44,7 +44,7 @@ Does not install these. You need them on the host:
 - [fcitx5-rime](https://github.com/fcitx/fcitx5-rime) for 中 / schema / ascii mode
   (option toggles need the patch above)
 - Mozc (`/usr/lib/mozc/mozc_tool`) for あ
-- font `Noto Sans CJK JP`
+- font system font (`omarchy font set` alias), CJK via fontconfig fallback
 
 Other fcitx5 IMs still appear in the picker; only Rime and Mozc get extra actions.
 
