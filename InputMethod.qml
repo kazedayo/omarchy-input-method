@@ -41,10 +41,9 @@ Panel {
   property var optRows: []
 
   readonly property color fg: bar ? bar.foreground : Color.foreground
-  readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   // System font; CJK glyphs come from fontconfig fallback (Noto Sans Mono
   // CJK KR), so labels may shift vertically and han shapes aren't JP-style.
-  readonly property string cjkFamily: fontFamily
+  readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   readonly property string label: {
     if (imState === "zh") return "中"
@@ -133,13 +132,18 @@ Panel {
   }
 
   function activateCursor() {
-    var t = cursorTargets[cursorIndex]
+    activateTarget(cursorTargets[cursorIndex])
+  }
+
+  // One dispatch for the keyboard cursor and row clicks: option rows stay
+  // open for multi-toggle, everything else closes once the command is sent.
+  function activateTarget(t) {
     if (!t || !bar) return
+    if (t.kind === "option") { activateOptionRow(t.row); return }
     close()
     if (t.kind === "im") bar.run("fcitx5-remote -s " + t.value)
     else if (t.kind === "schema") bar.run("busctl --user call org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 SetSchema s " + t.value)
     else if (t.kind === "ascii") bar.run("busctl --user call org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 SetAsciiMode b " + (imState === "ren" ? "false" : "true"))
-    else if (t.kind === "option") root.activateOptionRow(t.row)  // stays open for multi-toggle
     else if (t.kind === "mozc") bar.run("/usr/lib/mozc/mozc_tool --mode=config_dialog")
   }
 
@@ -582,7 +586,7 @@ Panel {
                 textFormat: Text.PlainText
                 text: root.label
                 color: root.fg
-                font.family: root.cjkFamily
+                font.family: root.fontFamily
                 font.pixelSize: Style.font.display
               }
             }
@@ -611,10 +615,7 @@ Panel {
                 glyph: root.glyphFor(modelData)
                 label: root.labelFor(modelData)
                 checked: root.isActive(modelData)
-                onActivate: {
-                  root.close()
-                  if (root.bar) root.bar.run("fcitx5-remote -s " + modelData)
-                }
+                onActivate: root.activateTarget({ kind: "im", value: modelData })
               }
             }
           }
@@ -650,10 +651,7 @@ Panel {
                 flatIndex: root.imList.length + index
                 label: root.prettySchema(modelData)
                 checked: modelData === root.currentSchema
-                onActivate: {
-                  root.close()
-                  if (root.bar) root.bar.run("busctl --user call org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 SetSchema s " + modelData)
-                }
+                onActivate: root.activateTarget({ kind: "schema", value: modelData })
               }
             }
 
@@ -662,10 +660,7 @@ Panel {
               offText: root.asciiStates.length === 2 ? root.asciiStates[0] : "中文"
               onText: root.asciiStates.length === 2 ? root.asciiStates[1] : "English"
               on: root.imState === "ren"
-              onActivate: {
-                root.close()
-                if (root.bar) root.bar.run("busctl --user call org.fcitx.Fcitx5 /rime org.fcitx.Fcitx.Rime1 SetAsciiMode b " + (root.imState === "ren" ? "false" : "true"))
-              }
+              onActivate: root.activateTarget({ kind: "ascii" })
             }
 
             Repeater {
@@ -692,7 +687,7 @@ Panel {
                     offText: modelData.labels[0]
                     onText: modelData.labels[1]
                     on: modelData.on
-                    onActivate: root.activateOptionRow(modelData)
+                    onActivate: root.activateTarget({ kind: "option", row: modelData })
                   }
                 }
 
@@ -705,7 +700,7 @@ Panel {
                     flatIndex: root.imList.length + root.schemaRowsCount + 1 + groupDelegate.modelData.firstSelectIndex + index
                     label: modelData.label
                     checked: modelData.active
-                    onActivate: root.activateOptionRow(modelData)
+                    onActivate: root.activateTarget({ kind: "option", row: modelData })
                   }
                 }
               }
@@ -728,10 +723,7 @@ Panel {
               flatIndex: root.imList.length
               glyph: "あ"
               label: "Mozc settings…"
-              onActivate: {
-                root.close()
-                if (root.bar) root.bar.run("/usr/lib/mozc/mozc_tool --mode=config_dialog")
-              }
+              onActivate: root.activateTarget({ kind: "mozc" })
             }
           }
         }
@@ -739,58 +731,30 @@ Panel {
     }
   }
 
-  // Shared picker row: glyph column + label with the stock CursorSurface
-  // chrome (hover/selected fills come from hasCursor/current, like audio).
-  component PanelRow: CursorSurface {
-    id: row
+  // Shared row chrome: flat-cursor wiring, colors, hover feedback, click
+  // dispatch. PanelRow and ToggleRow fill the inner Row and add their state.
+  component CursorRow: CursorSurface {
+    id: crow
     width: parent.width
-    required property int flatIndex
-    property string glyph: ""
-    property string label: ""
-    property bool checked: false
+    property int flatIndex: 0
+    property alias rowSpacing: innerRow.spacing
     signal activate()
 
-    hasCursor: root.cursorActive && root.cursorIndex === row.flatIndex
-    current: row.checked
+    hasCursor: root.cursorActive && root.cursorIndex === crow.flatIndex
     foreground: root.fg
     fill: root.hoverFill
     currentFill: root.selectedFill
-    implicitHeight: rowInner.implicitHeight + Style.spacing.xl
+    implicitHeight: innerRow.implicitHeight + Style.spacing.xl
+
+    default property alias content: innerRow.data
 
     Row {
-      id: rowInner
+      id: innerRow
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
       anchors.leftMargin: Style.space(6)
       anchors.rightMargin: Style.space(6)
-      // No glyph → no reserved column and no leading gap: label rows align
-      // flush with the row edge instead of drifting past a dead 22px box.
-      spacing: row.glyph !== "" ? Style.space(8) : 0
-
-      Text {
-        textFormat: Text.PlainText
-        text: row.glyph
-        visible: row.glyph !== ""
-        color: root.fg
-        font.family: root.cjkFamily
-        font.pixelSize: Style.font.title
-        width: Style.space(22)
-        horizontalAlignment: Text.AlignHCenter
-        anchors.verticalCenter: parent.verticalCenter
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        text: row.label
-        color: root.fg
-        font.family: root.cjkFamily
-        font.pixelSize: Style.font.body
-        font.bold: row.checked
-        elide: Text.ElideRight
-        width: row.glyph !== "" ? parent.width - Style.space(22) - Style.space(8) : parent.width
-        anchors.verticalCenter: parent.verticalCenter
-      }
     }
 
     MouseArea {
@@ -799,9 +763,44 @@ Panel {
       cursorShape: Qt.PointingHandCursor
       onContainsMouseChanged: if (containsMouse) {
         root.cursorActive = true
-        root.cursorIndex = row.flatIndex
+        root.cursorIndex = crow.flatIndex
       }
-      onClicked: row.activate()
+      onClicked: crow.activate()
+    }
+  }
+
+  component PanelRow: CursorRow {
+    id: row
+    property string glyph: ""
+    property string label: ""
+    property bool checked: false
+    current: row.checked
+    // No glyph → no reserved column and no leading gap: label rows align
+    // flush with the row edge instead of drifting past a dead 22px box.
+    rowSpacing: row.glyph !== "" ? Style.space(8) : 0
+
+    Text {
+      textFormat: Text.PlainText
+      text: row.glyph
+      visible: row.glyph !== ""
+      color: root.fg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.title
+      width: Style.space(22)
+      horizontalAlignment: Text.AlignHCenter
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Text {
+      textFormat: Text.PlainText
+      text: row.label
+      color: root.fg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      font.bold: row.checked
+      elide: Text.ElideRight
+      width: row.glyph !== "" ? parent.width - Style.space(22) - Style.space(8) : parent.width
+      anchors.verticalCenter: parent.verticalCenter
     }
   }
 
@@ -824,73 +823,43 @@ Panel {
   // Two-state switch row: both states are shown with the active one bold and
   // the other dimmed, so the row reads as a flip rather than a menu entry —
   // row-level checked styling (accent fill) would read as a selection list.
-  component ToggleRow: CursorSurface {
+  component ToggleRow: CursorRow {
     id: trow
-    width: parent.width
-    required property int flatIndex
     property string offText: ""
     property string onText: ""
     property bool on: false
-    signal activate()
+    rowSpacing: Style.space(8)
 
-    hasCursor: root.cursorActive && root.cursorIndex === trow.flatIndex
-    current: false
-    foreground: root.fg
-    fill: root.hoverFill
-    currentFill: root.selectedFill
-    implicitHeight: trowInner.implicitHeight + Style.spacing.xl
-
-    Row {
-      id: trowInner
-      anchors.left: parent.left
-      anchors.right: parent.right
+    Text {
+      textFormat: Text.PlainText
+      text: trow.offText
+      opacity: trow.on ? 0.55 : 1
+      color: root.fg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      font.bold: !trow.on
       anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(6)
-      anchors.rightMargin: Style.space(6)
-      spacing: Style.space(8)
-
-      Text {
-        textFormat: Text.PlainText
-        text: trow.offText
-        opacity: trow.on ? 0.55 : 1
-        color: root.fg
-        font.family: root.cjkFamily
-        font.pixelSize: Style.font.body
-        font.bold: !trow.on
-        anchors.verticalCenter: parent.verticalCenter
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        text: "⇄"
-        opacity: 0.55
-        color: root.fg
-        font.family: root.cjkFamily
-        font.pixelSize: Style.font.body
-        anchors.verticalCenter: parent.verticalCenter
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        text: trow.onText
-        opacity: trow.on ? 1 : 0.55
-        color: root.fg
-        font.family: root.cjkFamily
-        font.pixelSize: Style.font.body
-        font.bold: trow.on
-        anchors.verticalCenter: parent.verticalCenter
-      }
     }
 
-    MouseArea {
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onContainsMouseChanged: if (containsMouse) {
-        root.cursorActive = true
-        root.cursorIndex = trow.flatIndex
-      }
-      onClicked: trow.activate()
+    Text {
+      textFormat: Text.PlainText
+      text: "⇄"
+      opacity: 0.55
+      color: root.fg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Text {
+      textFormat: Text.PlainText
+      text: trow.onText
+      opacity: trow.on ? 1 : 0.55
+      color: root.fg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      font.bold: trow.on
+      anchors.verticalCenter: parent.verticalCenter
     }
   }
 }
