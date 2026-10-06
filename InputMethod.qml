@@ -513,6 +513,28 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
+    // First-party panels hand off bar-strip clicks through bar.clickTargets,
+    // but the third-party facade scopes that list to this plugin's own
+    // button, so a click on any other toolbar icon only dismissed us. Cut
+    // the bar window out of the input mask instead: clicks there fall
+    // through to the bar surface, the clicked widget opens its own panel,
+    // and the bar's popout coordinator closes this one — one-click panel
+    // switching with the first-party fade choreography.
+    // ponytail: clicks on empty bar background no longer dismiss (they land
+    // on the bar's own surface, as with no panel open); restore parity if the
+    // shell facade ever exposes other widgets' click targets to plugins.
+    mask: Region {
+      width: panel.screenW
+      height: panel.screenH
+
+      Region {
+        intersection: Intersection.Subtract
+        x: panel.barPos === "right" ? panel.screenW - panel.barW : 0
+        y: panel.barPos === "bottom" ? panel.screenH - panel.barH : 0
+        width: panel.barPos === "left" || panel.barPos === "right" ? panel.barW : panel.screenW
+        height: panel.barPos === "top" || panel.barPos === "bottom" ? panel.barH : panel.screenH
+      }
+    }
     contentWidth: panel.fittedContentWidth(Style.space(300))
     contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(420))
 
